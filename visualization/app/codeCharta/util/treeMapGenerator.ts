@@ -20,6 +20,7 @@ export function createTreemapNodes(map: CodeMapNode, state: State, metricData: N
 		// Base root folder has width: 100px and length: 100px
 		const nodes: Node[] = [TreeMapHelper.buildRootFolderForFixedFolders(hierarchyNode.data, heightScale, state, isDeltaState)]
 
+		// TODO we must adjust the following calculation of the total map size.
 		// Multiply mapSize of (default) 250px by 2 = 500px and add the total margin
 		const totalMapSize =
 			state.treeMap.mapSize * 2 + getEstimatedNodesPerSide(hierarchyNode) * (state.dynamicSettings.margin / PADDING_SCALING_FACTOR)
@@ -151,8 +152,9 @@ function scaleRoot(root: Node, scaleLength: number, scaleWidth: number) {
 
 function getSquarifiedTreeMap(map: CodeMapNode, state: State, mapSizeResolutionScaling: number): SquarifiedTreeMap {
 	const hierarchyNode = hierarchy(map)
-	const nodesPerSide = getEstimatedNodesPerSide(hierarchyNode)
-	const padding = state.dynamicSettings.margin * PADDING_SCALING_FACTOR * mapSizeResolutionScaling
+	const totalNodes = getEstimatedNodesPerSide(hierarchyNode)
+	const nodesPerSide = 4 * Math.sqrt(totalNodes)
+	const padding = state.dynamicSettings.margin
 	let mapWidth
 	let mapHeight
 
@@ -160,66 +162,97 @@ function getSquarifiedTreeMap(map: CodeMapNode, state: State, mapSizeResolutionS
 		mapWidth = map.fixedPosition.width
 		mapHeight = map.fixedPosition.height
 	} else {
+		//TODO rename to minWidth, minHeight
 		mapWidth = state.treeMap.mapSize * 2
 		mapHeight = state.treeMap.mapSize * 2
 	}
 
 	let addedLabelSpace = 0
+
+	//TODO remove
+	console.log(mapWidth, mapHeight, addedLabelSpace)
+
 	hierarchyNode.eachAfter(node => {
 		// Precalculate the needed paddings for the floor folder labels to be able to expand the default map size
 		if (!isLeaf(node)) {
 			if (node.depth === 0) {
 				addedLabelSpace += DEFAULT_PADDING_FLOOR_LABEL_FROM_LEVEL_1
-			}
-			if (node.depth > 0 && node.depth < 3) {
+			} else if (node.depth < 3) {
 				addedLabelSpace += DEFAULT_PADDING_FLOOR_LABEL_FROM_LEVEL_2
 			}
 		}
 	})
+
+	// TODO ATTENTION!!!!!!!
+	// the area values are for example the sum of rloc values. They are not absolute Pixel values (length/width)
+	hierarchyNode.sum(node => (calculateAreaValue(node, state) + padding) * mapSizeResolutionScaling)
+	const estimatedBuildingWidth = 4 * Math.sqrt(hierarchyNode.value)
 
 	// nodesPerSide is just an estimation.
 	// We do not know the exact amount,
 	// because the treemap algorithm is/must be executed with an initial width and height afterwards.
 	// TODO If it is wrong some buildings might be cut off.
 	// Use mapSizeResolutionScaling to scale down the pixels need for rendering of the map (width and height size)
-	const width = (mapWidth + nodesPerSide * state.dynamicSettings.margin + addedLabelSpace) * mapSizeResolutionScaling
-	const height = (mapHeight + nodesPerSide * state.dynamicSettings.margin + addedLabelSpace) * mapSizeResolutionScaling
+	//let width = (nodesPerSide * state.dynamicSettings.margin + addedLabelSpace + estimatedBuildingWidth) * mapSizeResolutionScaling
+	// we need to multiply the margins by 2 because a margin is added on the top and bottom of a plane.
+	let height = (nodesPerSide * (2 * state.dynamicSettings.margin) + addedLabelSpace + estimatedBuildingWidth) * mapSizeResolutionScaling
 
+	//width = Math.min(mapWidth, width)
+	height = Math.max(mapHeight, height)
+
+	// TODO remove
+	console.log(height, estimatedBuildingWidth)
+
+	//const marginRatio = padding / 50
+
+	//const width = 722 * marginRatio
+	//const height = 722 * marginRatio
+
+	// TODO size is squared - check if this is correct
 	const treeMap = treemap<CodeMapNode>()
-		.size([width, height])
-		.paddingOuter(padding)
+		.size([height, height])
+		// TODO Improve magic number
+		.paddingOuter(height * 0.02)
 		.paddingInner(padding)
+		.round(true)
 		.paddingRight(node => {
 			// Start the labels at level 1 not 0 because the root folder should not be labeled
 			if (node.depth === 0) {
 				// Add a big padding for the first folder level (the font is bigger than in deeper levels)
 				return DEFAULT_PADDING_FLOOR_LABEL_FROM_LEVEL_1
 			}
-			if (node.depth > 0 && node.depth < 3) {
+			if (node.depth < 3) {
 				return DEFAULT_PADDING_FLOOR_LABEL_FROM_LEVEL_2
 			}
 			// add treemap algorithm default padding otherwise
 			return padding
 		})
 
-	return { treeMap: treeMap(hierarchyNode.sum(node => calculateAreaValue(node, state) * mapSizeResolutionScaling)), height, width }
+	// TODO refactor it and rename vars
+	const temporaryTreemap = treeMap(hierarchyNode)
+	const temporaryWidth = Math.abs(temporaryTreemap.x1 - temporaryTreemap.x0)
+	const temporaryHeight = Math.abs(temporaryTreemap.y1 - temporaryTreemap.y0)
+
+	// TODO remove
+	console.log(temporaryHeight, temporaryWidth)
+	return { treeMap: temporaryTreemap, height, width: height }
 }
 
+// TODO rename function and remove the out-commented return
 function getEstimatedNodesPerSide(hierarchyNode: HierarchyNode<CodeMapNode>) {
 	let totalNodes = 0
-	let blacklistedNodes = 0
 	hierarchyNode.each(({ data }) => {
-		if (data.isExcluded || data.isFlattened) {
-			blacklistedNodes++
+		if (!data.isExcluded && !data.isFlattened) {
+			totalNodes++
 		}
-		totalNodes++
 	})
+	return totalNodes
 
 	// What does this line do?
 	// Imagine a 3x3 grid of 9 nodes
 	// 3 nodes are placed on the x-axis and 3 on the y-axis = 6
 	// The calculated value is probably used to calculate the total margin which extends length and width of the map.
-	return 2 * Math.sqrt(totalNodes - blacklistedNodes)
+	// return 2 * Math.sqrt(totalNodes - blacklistedNodes)
 }
 
 function isOnlyVisibleInComparisonMap(node: CodeMapNode, dynamicSettings: DynamicSettings) {
@@ -239,5 +272,6 @@ export function calculateAreaValue(node: CodeMapNode, { dynamicSettings }: State
 	if (isLeaf(node) && node.attributes?.[dynamicSettings.areaMetric]) {
 		return node.attributes[dynamicSettings.areaMetric]
 	}
-	return 0
+	// TODO is 1 correct? Why 1? Because 1 is the minimum area value, so that a building is rendered in every case - right?
+	return 1
 }
